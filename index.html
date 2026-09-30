@@ -115,7 +115,7 @@ async function loadBytes() {
   return bytes.buffer;
 }
 
-let mixer, actions = {}, dino, jawEnd, headBone, mode = "walk", eating = false, speed = 1;
+let mixer, actions = {}, dino, jawEnd, headBone, chestBone, mode = "walk", eating = false, speed = 1;
 
 // The walk's root carries forward travel; strip the linear drift so it loops in place.
 function inPlace(clip, rootName) {
@@ -140,6 +140,7 @@ dino.traverse((o) => {
   }
   if (o.isBone && o.name === "JawEnd") jawEnd = o;
   if (o.isBone && o.name === "Head") headBone = o;
+  if (o.isBone && o.name === "Chest") chestBone = o;
 });
 dino.rotation.y = SP.yaw;             // Stego rig faces +X; turn it to face +Z like the T. rex
 scene.add(dino);
@@ -252,6 +253,7 @@ mixer.addEventListener("finished", (e) => {
 });
 
 // Test hooks: #feed eats right away, #stand starts standing (combine with ?species=stego or #stego).
+// Proof cams: #headcam=front|q34|side|side_r|q34r|low (mouth), #bodycam=side|side_r|front|q34|q34r (arms), &dist=<d>.
 if (location.hash.includes("stand")) setIdle("stand");
 if (location.hash.includes("feed")) feed();
 const tq = location.hash.match(/t=([\d.]+)/);
@@ -260,13 +262,24 @@ if (tq) { // freeze the chomp at a time (proof renders)
   eating = true; jawEnd.getWorldPosition(mouthPos); foodFrom.copy(mouthPos).add(new THREE.Vector3(0.1, 0.45, 0.35));
   food.visible = true; hearted = true;
 }
+const camDist = location.hash.match(/dist=([\d.]+)/);   // proof cams: optional distance override
 const hc = location.hash.match(/headcam=(\w+)/);
 if (hc && headBone) { // mouth close-up for proofs: #headcam=front|q34|side
   dino.updateMatrixWorld(true); food.visible = false;
   const p = new THREE.Vector3(), q = new THREE.Vector3(); headBone.getWorldPosition(p); jawEnd.getWorldPosition(q);
   p.lerp(q, 0.7);
-  const d = { front: [0.25, 0.2, 1], q34: [0.8, 0.25, 0.8], side: [1, 0.05, 0.08] }[hc[1]] || [0.25, 0.2, 1];
-  controls.target.copy(p); camera.position.copy(p).add(new THREE.Vector3(...d).normalize().multiplyScalar(0.6));
+  const d = { front: [0.25, 0.2, 1], q34: [0.8, 0.25, 0.8], side: [1, 0.05, 0.08], side_r: [-1, 0.05, 0.08],
+    q34r: [-0.8, 0.25, 0.8], low: [0.5, -0.45, 0.8] }[hc[1]] || [0.25, 0.2, 1];
+  controls.target.copy(p); camera.position.copy(p).add(new THREE.Vector3(...d).normalize().multiplyScalar(camDist ? +camDist[1] : 0.6));
+  controls.update();
+}
+const bc = location.hash.match(/bodycam=(\w+)/);
+if (bc && chestBone) { // arms / torso close-up for proofs: #bodycam=side|side_r|front|q34|q34r
+  dino.updateMatrixWorld(true); food.visible = false;
+  const p = new THREE.Vector3(); chestBone.getWorldPosition(p); p.y -= 0.12;
+  const d = { front: [0, 0.1, 1], q34: [0.8, 0.15, 0.8], side: [1, 0.05, 0.1], side_r: [-1, 0.05, 0.1],
+    q34r: [-0.8, 0.15, 0.8] }[bc[1]] || [0.8, 0.15, 0.8];
+  controls.target.copy(p); camera.position.copy(p).add(new THREE.Vector3(...d).normalize().multiplyScalar(camDist ? +camDist[1] : 1.1));
   controls.update();
 }
 
