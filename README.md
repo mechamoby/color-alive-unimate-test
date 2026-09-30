@@ -1,5 +1,8 @@
 # Color Alive — UniMate T. rex walk + chomp (live test)
 
+> **Note:** This is a **Color Alive! Sandbox** demo (UniMate spike), not the Color Alive! Dino Friends product.
+
+
 Playable Three.js page for the UniMate walk/stand/feed spike.
 
 Source: private repo `mechamoby/Color-Alive---Dino-Friends` branch `trex-unimate-spike`.
