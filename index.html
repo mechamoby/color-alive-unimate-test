@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Color Alive! T. rex — walk + chomp (UniMate spike)</title>
+<title>Color Alive! UniMate spike — walk + chomp (T. rex · Stego)</title>
 <style>
   :root { --ink: #2b2233; --cream: #fff8ec; --accent: #ff7a3d; }
   * { box-sizing: border-box; }
@@ -12,6 +12,10 @@
   header { position: fixed; top: 0; left: 0; right: 0; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
   header h1 { margin: 0; font-size: 20px; }
   header small { opacity: .6; }
+  header .right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  nav.species { pointer-events: auto; display: flex; gap: 6px; background: #fff8; padding: 4px; border-radius: 999px; }
+  nav.species a { font-weight: 700; font-size: 15px; padding: 7px 14px; border-radius: 999px; color: var(--ink); text-decoration: none; }
+  nav.species a.on { background: var(--ink); color: #fff; }
   #status { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; background: #fff; padding: 12px 18px; border-radius: 14px; box-shadow: 0 4px 18px #0002; }
   footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
   button { font: inherit; font-size: 19px; font-weight: 700; border: 0; border-radius: 999px; padding: 14px 24px; background: #fff; color: var(--ink); box-shadow: 0 4px 0 #0002; cursor: pointer; }
@@ -25,8 +29,9 @@
 </head>
 <body>
 <div id="stage"></div>
-<header><h1>T. rex wakes up <small>UniMate walk + chomp</small></h1><small id="clipinfo"></small></header>
-<div id="status">Loading dino… (21 MB)</div>
+<header><h1 id="title">T. rex wakes up <small>UniMate walk + chomp</small></h1>
+  <div class="right"><nav class="species"><a data-sp="trex" href="?species=trex">T. rex</a><a data-sp="stego" href="?species=stego">Stego</a></nav><small id="clipinfo"></small></div></header>
+<div id="status">Loading dino…</div>
 <div id="hint">Tap the dino or press Feed to make it eat · drag to turn</div>
 <footer>
   <button id="walk" class="on" disabled>Walk</button>
@@ -48,8 +53,25 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
 const $ = (id) => document.getElementById(id);
 const FPS = 30;
-const SNAP_FRAME = 23.5;          // chomp beat: open 0-14, hold 14-22, snap 22-25, chew 29-59, happy 59-89
-const HAPPY_FRAME = 59;
+// Species toggle (?species=trex|stego, or #stego). Each species is one GLB holding the mesh plus
+// both clips (`walk`, `chomp`); frames below are that species' chomp beats.
+const SPECIES = {
+  trex: {  // chomp: open 0-14, hold 14-22, snap 22-25, chew 29-59, happy 59-89
+    title: "T. rex wakes up", sub: "UniMate walk + chomp", file: "trex-unimate.glb", mb: 21, txt: true,
+    snap: 23.5, happy: 59, yaw: 0, feed: "🍖 Feed", food: "meat",
+  },
+  stego: { // munch: lean + open 0-12, hold 12-18, snap 18-21, 3 grinding chews 26-57, happy 60-83
+    title: "Stego wakes up", sub: "walk + herbivore munch", file: "stego-unimate.glb", mb: 3.5, txt: false,
+    snap: 20, happy: 60, yaw: -Math.PI / 2, feed: "🌿 Feed", food: "leaf",
+  },
+};
+const spKey = new URLSearchParams(location.search).get("species") || (location.hash.includes("stego") ? "stego" : "trex");
+const SP = SPECIES[spKey] || SPECIES.trex;
+const SNAP_FRAME = SP.snap, HAPPY_FRAME = SP.happy;
+$("title").innerHTML = `${SP.title} <small>${SP.sub}</small>`;
+$("status").textContent = `Loading dino… (${SP.mb} MB)`;
+$("feed").textContent = SP.feed;
+for (const a of document.querySelectorAll("nav.species a")) a.classList.toggle("on", SPECIES[a.dataset.sp] === SP);
 
 // ---------- scene ------------------------------------------------------------------
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -76,17 +98,18 @@ function resize() {
 addEventListener("resize", resize); resize();
 
 // ---------- model ------------------------------------------------------------------
-// Artifact hosts can't serve .glb, so try the binary first (local server) and fall back
-// to the base64 text copy. One file holds the mesh plus both clips (`walk`, `chomp`).
+// Artifact hosts can't serve .glb, so try the binary first (local server / Pages) and fall
+// back to the base64 text copy (T. rex only). One file holds the mesh plus both clips.
 async function loadBytes() {
   try {
-    const r = await fetch("trex-unimate.glb");
+    const r = await fetch(SP.file);
     if (r.ok && (r.headers.get("content-type") || "").indexOf("text/html") < 0) {
       const buf = await r.arrayBuffer();
       if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) === "glTF") return buf;
     }
   } catch (e) { /* fall through */ }
-  const b64 = (await (await fetch("trex-unimate.glb.txt")).text()).trim();
+  if (!SP.txt) throw new Error(`could not load ${SP.file}`);
+  const b64 = (await (await fetch(SP.file + ".txt")).text()).trim();
   const bin = atob(b64), bytes = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
   return bytes.buffer;
@@ -118,7 +141,9 @@ dino.traverse((o) => {
   if (o.isBone && o.name === "JawEnd") jawEnd = o;
   if (o.isBone && o.name === "Head") headBone = o;
 });
+dino.rotation.y = SP.yaw;             // Stego rig faces +X; turn it to face +Z like the T. rex
 scene.add(dino);
+dino.updateMatrixWorld(true);
 
 // Fit: stand on the ground, face the camera's right, frame the whole body.
 const box = new THREE.Box3().setFromObject(dino), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
@@ -160,13 +185,25 @@ $("walk").onclick = () => setIdle("walk");
 $("stand").onclick = () => setIdle("stand");
 $("slow").onclick = () => { speed = speed === 1 ? 0.35 : 1; $("slow").classList.toggle("on", speed !== 1); };
 
-// Food: a little drumstick that arcs into the mouth and lands on the snap.
+// Food arcs into the mouth and lands on the snap: a drumstick (T. rex) or a leafy sprig (Stego).
 const food = new THREE.Group();
-const meat = new THREE.Mesh(new THREE.SphereGeometry(0.05, 20, 14), new THREE.MeshStandardMaterial({ color: 0xb5542a, roughness: 0.7 }));
-meat.scale.set(1.3, 1, 1);
-const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.09), new THREE.MeshStandardMaterial({ color: 0xfff4e0 }));
-bone.rotation.z = Math.PI / 2; bone.position.x = 0.08;
-food.add(meat, bone); food.visible = false; food.castShadow = true; scene.add(food);
+if (SP.food === "leaf") {
+  const leafMat = new THREE.MeshStandardMaterial({ color: 0x4caf50, roughness: 0.6, side: THREE.DoubleSide });
+  for (const [ang, sc] of [[0.5, 1], [-0.6, 0.85], [0.05, 0.7]]) {
+    const leaf = new THREE.Mesh(new THREE.SphereGeometry(0.035, 16, 10), leafMat);
+    leaf.scale.set(1.6 * sc, 0.28, 0.8 * sc); leaf.rotation.z = ang; leaf.position.set(0.045 * Math.cos(ang), 0.045 * Math.sin(ang), 0);
+    food.add(leaf);
+  }
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.005, 0.005, 0.08), new THREE.MeshStandardMaterial({ color: 0x6d8b3a }));
+  stem.rotation.z = Math.PI / 2; stem.position.x = -0.03; food.add(stem);
+} else {
+  const meat = new THREE.Mesh(new THREE.SphereGeometry(0.05, 20, 14), new THREE.MeshStandardMaterial({ color: 0xb5542a, roughness: 0.7 }));
+  meat.scale.set(1.3, 1, 1);
+  const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.09), new THREE.MeshStandardMaterial({ color: 0xfff4e0 }));
+  bone.rotation.z = Math.PI / 2; bone.position.x = 0.08;
+  food.add(meat, bone);
+}
+food.visible = false; food.castShadow = true; scene.add(food);
 const mouthPos = new THREE.Vector3(), foodFrom = new THREE.Vector3();
 
 function feed() {
@@ -214,7 +251,7 @@ mixer.addEventListener("finished", (e) => {
   actions.chomp.crossFadeTo(to, 0.4, false);
 });
 
-// Test hook: #feed eats right away, #stand starts standing.
+// Test hooks: #feed eats right away, #stand starts standing (combine with ?species=stego or #stego).
 if (location.hash.includes("stand")) setIdle("stand");
 if (location.hash.includes("feed")) feed();
 const tq = location.hash.match(/t=([\d.]+)/);
