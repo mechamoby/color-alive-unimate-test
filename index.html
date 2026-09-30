@@ -260,6 +260,15 @@ if (tq) { // freeze the chomp at a time (proof renders)
   eating = true; jawEnd.getWorldPosition(mouthPos); foodFrom.copy(mouthPos).add(new THREE.Vector3(0.1, 0.45, 0.35));
   food.visible = true; hearted = true;
 }
+const hc = location.hash.match(/headcam=(\w+)/);
+if (hc && headBone) { // mouth close-up for proofs: #headcam=front|q34|side
+  dino.updateMatrixWorld(true); food.visible = false;
+  const p = new THREE.Vector3(), q = new THREE.Vector3(); headBone.getWorldPosition(p); jawEnd.getWorldPosition(q);
+  p.lerp(q, 0.7);
+  const d = { front: [0.25, 0.2, 1], q34: [0.8, 0.25, 0.8], side: [1, 0.05, 0.08] }[hc[1]] || [0.25, 0.2, 1];
+  controls.target.copy(p); camera.position.copy(p).add(new THREE.Vector3(...d).normalize().multiplyScalar(0.6));
+  controls.update();
+}
 
 // ---------- loop -------------------------------------------------------------------
 const clock = new THREE.Clock();
