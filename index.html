@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Color Alive! T. rex — walk + chomp (UniMate spike)</title>
+<style>
+  :root { --ink: #2b2233; --cream: #fff8ec; --accent: #ff7a3d; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: linear-gradient(#bfe6ff, #fff8ec 70%); font-family: ui-rounded, "Nunito", system-ui, sans-serif; color: var(--ink); overflow: hidden; }
+  #stage { position: fixed; inset: 0; touch-action: none; }
+  header { position: fixed; top: 0; left: 0; right: 0; padding: 14px 18px; display: flex; justify-content: space-between; align-items: center; pointer-events: none; }
+  header h1 { margin: 0; font-size: 20px; }
+  header small { opacity: .6; }
+  #status { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 18px; background: #fff; padding: 12px 18px; border-radius: 14px; box-shadow: 0 4px 18px #0002; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; padding: 16px; display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; padding-bottom: max(16px, env(safe-area-inset-bottom)); }
+  button { font: inherit; font-size: 19px; font-weight: 700; border: 0; border-radius: 999px; padding: 14px 24px; background: #fff; color: var(--ink); box-shadow: 0 4px 0 #0002; cursor: pointer; }
+  button.on { background: var(--ink); color: #fff; }
+  button.feed { background: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  #hint { position: fixed; bottom: 86px; width: 100%; text-align: center; opacity: .65; font-size: 14px; pointer-events: none; }
+  .heart { position: fixed; font-size: 34px; pointer-events: none; animation: rise 1.4s ease-out forwards; }
+  @keyframes rise { from { opacity: 0; transform: translateY(0) scale(.5); } 20% { opacity: 1; } to { opacity: 0; transform: translateY(-120px) scale(1.2); } }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<header><h1>T. rex wakes up <small>UniMate walk + chomp</small></h1><small id="clipinfo"></small></header>
+<div id="status">Loading dino… (21 MB)</div>
+<div id="hint">Tap the dino or press Feed to make it eat · drag to turn</div>
+<footer>
+  <button id="walk" class="on" disabled>Walk</button>
+  <button id="stand" disabled>Stand</button>
+  <button id="feed" class="feed" disabled>🍖 Feed</button>
+  <button id="slow" disabled>Slow-mo</button>
+</footer>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+const $ = (id) => document.getElementById(id);
+const FPS = 30;
+const SNAP_FRAME = 23.5;          // chomp beat: open 0-14, hold 14-22, snap 22-25, chew 29-59, happy 59-89
+const HAPPY_FRAME = 59;
+
+// ---------- scene ------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.NeutralToneMapping;
+renderer.shadowMap.enabled = true;
+$("stage").appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(35, 1, 0.01, 100);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.enablePan = false;
+scene.add(new THREE.HemisphereLight(0xffffff, 0xd8c8b0, 1.6));
+const sun = new THREE.DirectionalLight(0xffffff, 2.2);
+sun.position.set(2, 4, 3); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+scene.add(sun);
+const ground = new THREE.Mesh(new THREE.CircleGeometry(3, 64), new THREE.ShadowMaterial({ opacity: 0.18 }));
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+}
+addEventListener("resize", resize); resize();
+
+// ---------- model ------------------------------------------------------------------
+// Artifact hosts can't serve .glb, so try the binary first (local server) and fall back
+// to the base64 text copy. One file holds the mesh plus both clips (`walk`, `chomp`).
+async function loadBytes() {
+  try {
+    const r = await fetch("trex-unimate.glb");
+    if (r.ok && (r.headers.get("content-type") || "").indexOf("text/html") < 0) {
+      const buf = await r.arrayBuffer();
+      if (new TextDecoder().decode(new Uint8Array(buf, 0, 4)) === "glTF") return buf;
+    }
+  } catch (e) { /* fall through */ }
+  const b64 = (await (await fetch("trex-unimate.glb.txt")).text()).trim();
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+let mixer, actions = {}, dino, jawEnd, headBone, mode = "walk", eating = false, speed = 1;
+
+// The walk's root carries forward travel; strip the linear drift so it loops in place.
+function inPlace(clip, rootName) {
+  const t = clip.tracks.find((k) => k.name === `${rootName}.position`);
+  if (!t) return;
+  const v = t.values, n = t.times.length;
+  for (const axis of [0, 1, 2]) {   // armature-local axes; vertical start≈end anyway
+    const a = v[axis], b = v[(n - 1) * 3 + axis];
+    for (let i = 0; i < n; i++) v[i * 3 + axis] -= (b - a) * (i / (n - 1));
+  }
+}
+
+const gltf = await new GLTFLoader().parseAsync(await loadBytes(), "");
+dino = gltf.scene;
+dino.traverse((o) => {
+  if (o.isMesh) {
+    o.castShadow = true;
+    // Body stays flat untextured; eye/tooth materials are the Blender-locked colors as-is.
+    const m = o.material;
+    m.map = m.normalMap = m.roughnessMap = m.metalnessMap = null; m.needsUpdate = true;
+    o.frustumCulled = false;
+  }
+  if (o.isBone && o.name === "JawEnd") jawEnd = o;
+  if (o.isBone && o.name === "Head") headBone = o;
+});
+scene.add(dino);
+
+// Fit: stand on the ground, face the camera's right, frame the whole body.
+const box = new THREE.Box3().setFromObject(dino), size = box.getSize(new THREE.Vector3()), c = box.getCenter(new THREE.Vector3());
+const s = 1.6 / Math.max(size.x, size.y, size.z);
+dino.scale.setScalar(s);
+dino.position.set(-c.x * s, -box.min.y * s, -c.z * s);
+const h = size.y * s;
+controls.target.set(0, h * 0.5, 0);
+camera.position.set(1.9, h * 0.75, 1.9);
+controls.update();
+
+mixer = new THREE.AnimationMixer(dino);
+const clips = Object.fromEntries(gltf.animations.map((a) => [a.name, a]));
+const rootName = clips.walk.tracks.find((k) => k.name.endsWith(".position"))?.name.split(".")[0] || "Hips";
+inPlace(clips.walk, rootName);
+inPlace(clips.chomp, rootName);
+actions.walk = mixer.clipAction(clips.walk);
+actions.chomp = mixer.clipAction(clips.chomp);
+actions.chomp.setLoop(THREE.LoopOnce, 1); actions.chomp.clampWhenFinished = true;
+// Stand = walk clip frozen on frame 0 (the rest pose, eyes/teeth visible).
+actions.stand = mixer.clipAction(clips.walk.clone()); actions.stand.name = "stand";
+actions.walk.play();
+$("clipinfo").textContent = `walk ${clips.walk.duration.toFixed(1)} s · chomp ${clips.chomp.duration.toFixed(1)} s`;
+$("status").remove();
+for (const b of document.querySelectorAll("button")) b.disabled = false;
+
+// ---------- controls ---------------------------------------------------------------
+function setIdle(next) {
+  mode = next;
+  $("walk").classList.toggle("on", next === "walk");
+  $("stand").classList.toggle("on", next === "stand");
+  if (eating) return;
+  const to = next === "walk" ? actions.walk : actions.stand;
+  const from = next === "walk" ? actions.stand : actions.walk;
+  to.reset().play(); if (next === "stand") to.paused = true;
+  from.crossFadeTo(to, 0.3, false);
+}
+$("walk").onclick = () => setIdle("walk");
+$("stand").onclick = () => setIdle("stand");
+$("slow").onclick = () => { speed = speed === 1 ? 0.35 : 1; $("slow").classList.toggle("on", speed !== 1); };
+
+// Food: a little drumstick that arcs into the mouth and lands on the snap.
+const food = new THREE.Group();
+const meat = new THREE.Mesh(new THREE.SphereGeometry(0.05, 20, 14), new THREE.MeshStandardMaterial({ color: 0xb5542a, roughness: 0.7 }));
+meat.scale.set(1.3, 1, 1);
+const bone = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.09), new THREE.MeshStandardMaterial({ color: 0xfff4e0 }));
+bone.rotation.z = Math.PI / 2; bone.position.x = 0.08;
+food.add(meat, bone); food.visible = false; food.castShadow = true; scene.add(food);
+const mouthPos = new THREE.Vector3(), foodFrom = new THREE.Vector3();
+
+function feed() {
+  if (eating) return;
+  eating = true; $("feed").disabled = true;
+  const from = mode === "walk" ? actions.walk : actions.stand;
+  actions.chomp.reset().play();
+  from.crossFadeTo(actions.chomp, 0.25, false);
+  jawEnd.getWorldPosition(mouthPos);
+  foodFrom.copy(mouthPos).add(new THREE.Vector3(0.1, 0.45, 0.35));
+  food.position.copy(foodFrom); food.visible = true;
+  hearted = false;
+}
+$("feed").onclick = feed;
+
+// Tap on the dino (not a drag) = feed.
+const ray = new THREE.Raycaster(), ptr = new THREE.Vector2();
+let down = null;
+renderer.domElement.addEventListener("pointerdown", (e) => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", (e) => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 8) return;
+  ptr.set((e.clientX / innerWidth) * 2 - 1, -(e.clientY / innerHeight) * 2 + 1);
+  ray.setFromCamera(ptr, camera);
+  if (ray.intersectObject(dino, true).length) feed();
+});
+
+let hearted = false;
+function hearts() {
+  const p = new THREE.Vector3(); headBone.getWorldPosition(p); p.project(camera);
+  const x = (p.x + 1) / 2 * innerWidth, y = (1 - p.y) / 2 * innerHeight;
+  ["💛", "❤️", "✨", "💚"].forEach((ch, i) => {
+    const el = document.createElement("div");
+    el.className = "heart"; el.textContent = ch;
+    el.style.left = `${x - 40 + i * 26}px`; el.style.top = `${y - 60 - (i % 2) * 20}px`;
+    el.style.animationDelay = `${i * 0.12}s`;
+    document.body.appendChild(el); setTimeout(() => el.remove(), 2000);
+  });
+}
+
+mixer.addEventListener("finished", (e) => {
+  if (e.action !== actions.chomp) return;
+  eating = false; $("feed").disabled = false;
+  const to = mode === "walk" ? actions.walk : actions.stand;
+  to.reset().play(); if (mode === "stand") to.paused = true;
+  actions.chomp.crossFadeTo(to, 0.4, false);
+});
+
+// Test hook: #feed eats right away, #stand starts standing.
+if (location.hash.includes("stand")) setIdle("stand");
+if (location.hash.includes("feed")) feed();
+const tq = location.hash.match(/t=([\d.]+)/);
+if (tq) { // freeze the chomp at a time (proof renders)
+  actions.walk.stop(); actions.chomp.reset().play(); mixer.update(+tq[1]); speed = 0;
+  eating = true; jawEnd.getWorldPosition(mouthPos); foodFrom.copy(mouthPos).add(new THREE.Vector3(0.1, 0.45, 0.35));
+  food.visible = true; hearted = true;
+}
+
+// ---------- loop -------------------------------------------------------------------
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  mixer.update(clock.getDelta() * speed);
+  if (eating) {
+    const f = actions.chomp.time * FPS;
+    if (f < SNAP_FRAME) {
+      jawEnd.getWorldPosition(mouthPos);
+      const k = Math.min(1, f / SNAP_FRAME), e = k * k * (3 - 2 * k);
+      food.position.lerpVectors(foodFrom, mouthPos, e);
+      food.position.y += Math.sin(Math.PI * e) * 0.15;
+      food.rotation.z = e * 6;
+    } else food.visible = false;
+    if (!hearted && f >= HAPPY_FRAME) { hearted = true; hearts(); }
+  }
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
